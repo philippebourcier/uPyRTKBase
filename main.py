@@ -80,7 +80,7 @@ def main():
     print(f"Hardware ID: {hw_id}")
     
     # Try to download config from server
-    config_server = 'http://picontrol.sysctl.org/'  # Change to your server
+    config_server = 'https://cloud-cfg.crtk.net/'  # Change to your server
     if download_config(config_server):
         print("✓ Configuration downloaded")
         print_config()
