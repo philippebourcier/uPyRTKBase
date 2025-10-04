@@ -1,6 +1,7 @@
 from machine import Pin, UART
 import time
 import rtcm_decoder
+import gc
 
 class UM980Config:
     # Define RTCM messages as class constant
@@ -46,13 +47,22 @@ class UM980Config:
         """Add $ prefix and checksum"""
         return f'${cmd}*{self._xor8_checksum(cmd)}'
     
+    def _clear_buffer(self):
+        # Clear buffer safely with size limit
+        bytes_to_clear = self.uart.any()
+        if bytes_to_clear > 0:
+            # Clear in chunks to prevent memory issues
+            while bytes_to_clear > 0:
+                chunk_size = min(bytes_to_clear, 1024)
+                self.uart.read(chunk_size)
+                bytes_to_clear = self.uart.any()
+    
     def send_query(self, cmd, timeout=5):
         """
         Send query command (no checksum, no $)
         Used for: MODE, CONFIG, UNILOGLIST, VERSIONA
         """
-        while self.uart.any():
-            self.uart.read(self.uart.any())
+        _clear_buffer()
         
         self.uart.write(cmd.encode() + b'\r\n')
         print(f"Sent: {cmd}")
@@ -60,8 +70,9 @@ class UM980Config:
         start = time.ticks_ms()
         response = b''
         last_data_time = None
+        max_response_size = 4096  # 4KB max
         
-        while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000:
+        while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000 and len(response) < max_response_size:
             if self.uart.any():
                 chunk = self.uart.read(self.uart.any())
                 if chunk:
@@ -87,9 +98,8 @@ class UM980Config:
         Used for: CONFIG xxx, MODE BASE, RTCM messages, SAVECONFIG, etc.
         """
         cmd_with_cs = self._cmd_with_checksum(cmd)
-        
-        while self.uart.any():
-            self.uart.read(self.uart.any())
+
+        _clear_buffer()
         
         self.uart.write(cmd_with_cs.encode() + b'\r\n')
         print(f"Sent: {cmd_with_cs}")
@@ -286,12 +296,12 @@ class UM980Config:
     def configure_rtcm_messages(self, com_port='COM2'):
         """Configure RTCM3 message output"""
         print(f"\n=== Configuring RTCM on {com_port} ===")
-        
         for msg_type, interval in self.RTCM_MESSAGES:
             cmd = f'{msg_type} {com_port} {interval}'
             print(f"  {msg_type} @ {interval}s")
             self.send_command(cmd)
             time.sleep(0.2)
+        gc.collect()
     
     def save_config(self):
         """Save configuration to NVM"""
@@ -311,6 +321,7 @@ class UM980Config:
         
         total_bytes = 0
         start_time = time.ticks_ms()
+        max_bytes = 1024 * 1024  # 1MB
         
         try:
             while True:
@@ -318,11 +329,17 @@ class UM980Config:
                 bytes_available = self.data_uart.any()
                 
                 if bytes_available > 0:
-                    # Read all available data at once
-                    data = self.data_uart.read(bytes_available)
+                    # Read in safe chunks
+                    chunk_size = min(bytes_available, 2048)
+                    data = self.data_uart.read(chunk_size)
                     if data:
                         total_bytes += len(data)
-                        
+
+                        # Safety limit
+                        if total_bytes > max_bytes:
+                            print(f"WARNING: Reached max bytes limit ({max_bytes})")
+                            break
+
                         if callback:
                             callback(data)
                         else:
@@ -339,6 +356,8 @@ class UM980Config:
         
         except KeyboardInterrupt:
             print("\nStopped by user")
+        except Exception as e:
+            print(f"\nError reading RTCM data: {e}")
         
         print(f"\nTotal bytes read: {total_bytes}")
         return total_bytes if not callback else None
