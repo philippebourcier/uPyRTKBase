@@ -1,16 +1,12 @@
 from machine import Pin, UART
 import time
 import rtcm_decoder
+from rtcm_params import RTCM_MESSAGES
+import gc
+from machine import WDT
+wdt = WDT(timeout=8000)
 
 class UM980Config:
-    # Define RTCM messages as class constant
-    RTCM_MESSAGES = [
-        ('RTCM1005', 30), ('RTCM1006', 30), ('RTCM1033', 1),
-        ('RTCM1019', 1), ('RTCM1020', 1), ('RTCM1042', 1),
-        ('RTCM1044', 1), ('RTCM1045', 1), ('RTCM1046', 1),
-        ('RTCM1077', 1), ('RTCM1087', 1), ('RTCM1097', 1),
-        ('RTCM1107', 1), ('RTCM1117', 1), ('RTCM1127', 1),
-    ]
         
     def __init__(self, uart_id=0, tx_pin=0, rx_pin=1, baudrate=115200, en_pin=6, data_uart_id=None, data_tx_pin=None, data_rx_pin=None):
         """Initialize UM980 configuration"""
@@ -45,14 +41,23 @@ class UM980Config:
     def _cmd_with_checksum(self, cmd):
         """Add $ prefix and checksum"""
         return f'${cmd}*{self._xor8_checksum(cmd)}'
-    
+
+    def _clear_buffer(self):
+        # Clear buffer safely with size limit
+        bytes_to_clear = self.uart.any()
+        if bytes_to_clear > 0:
+            # Clear in chunks to prevent memory issues
+            while bytes_to_clear > 0:
+                chunk_size = min(bytes_to_clear, 1024)
+                self.uart.read(chunk_size)
+                bytes_to_clear = self.uart.any()
+
     def send_query(self, cmd, timeout=5):
         """
         Send query command (no checksum, no $)
         Used for: MODE, CONFIG, UNILOGLIST, VERSIONA
         """
-        while self.uart.any():
-            self.uart.read(self.uart.any())
+        self._clear_buffer()
         
         self.uart.write(cmd.encode() + b'\r\n')
         print(f"Sent: {cmd}")
@@ -60,8 +65,9 @@ class UM980Config:
         start = time.ticks_ms()
         response = b''
         last_data_time = None
+        max_response_size = 4096
         
-        while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000:
+        while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000 and len(response) < max_response_size:
             if self.uart.any():
                 chunk = self.uart.read(self.uart.any())
                 if chunk:
@@ -87,9 +93,8 @@ class UM980Config:
         Used for: CONFIG xxx, MODE BASE, RTCM messages, SAVECONFIG, etc.
         """
         cmd_with_cs = self._cmd_with_checksum(cmd)
-        
-        while self.uart.any():
-            self.uart.read(self.uart.any())
+
+        self._clear_buffer()
         
         self.uart.write(cmd_with_cs.encode() + b'\r\n')
         print(f"Sent: {cmd_with_cs}")
@@ -250,7 +255,7 @@ class UM980Config:
             needs_update = True
         
         # Check RTCM messages using class constant
-        required_rtcm = {msg_type for msg_type, _ in self.RTCM_MESSAGES}
+        required_rtcm = {msg_type for msg_type, _ in RTCM_MESSAGES}
         
         active_on_com2 = {msg for msg, cfg in config['rtcm_messages'].items() 
                           if cfg['port'] == 'COM2'}
@@ -287,11 +292,13 @@ class UM980Config:
         """Configure RTCM3 message output"""
         print(f"\n=== Configuring RTCM on {com_port} ===")
         
-        for msg_type, interval in self.RTCM_MESSAGES:
+        for msg_type, interval in RTCM_MESSAGES:
             cmd = f'{msg_type} {com_port} {interval}'
             print(f"  {msg_type} @ {interval}s")
             self.send_command(cmd)
             time.sleep(0.2)
+
+        gc.collect()
     
     def save_config(self):
         """Save configuration to NVM"""
@@ -318,15 +325,12 @@ class UM980Config:
                 bytes_available = self.data_uart.any()
                 
                 if bytes_available > 0:
-                    # Read all available data at once
-                    data = self.data_uart.read(bytes_available)
+                    data = self.data_uart.read(min(bytes_available,2048))
                     if data:
-                        total_bytes += len(data)
-                        
                         if callback:
                             callback(data)
                         else:
-                            print(f"Received {len(data)} bytes (total: {total_bytes})")
+                            print(f"Received {len(data)} bytes")
                 
                 # Check timeout
                 if duration > 0:
@@ -339,6 +343,8 @@ class UM980Config:
         
         except KeyboardInterrupt:
             print("\nStopped by user")
+        except Exception as e:
+            print(f"\nError reading RTCM data: {e}")
         
         print(f"\nTotal bytes read: {total_bytes}")
         return total_bytes if not callback else None
@@ -357,6 +363,7 @@ class UM980Config:
         print("\n=== Getting AGC Values ===")
         
         for attempt in range(max_retries):
+            wdt.feed()
             # Use send_query which returns both OK and #AGCA response
             resp_str = self.send_query('AGCA', timeout=3)
             
@@ -482,4 +489,5 @@ if __name__ == '__main__':
     um980.read_rtcm_data(duration=10,callback=um980.decoder.process)
     
     
+
 

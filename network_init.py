@@ -1,5 +1,6 @@
 from wiznet_init import wiznet
 import time
+import gc
 
 # Global network interface
 nic = None
@@ -20,6 +21,16 @@ def w5x00_init(board="W55RP20-EVB-Pico", use_dhcp=True, static_ip=None, subnet=N
         Network interface object or None on failure
     """
     global nic
+    
+    # Clean up existing connection
+    if nic is not None:
+        try:
+            nic.disconnect()
+        except:
+            pass
+        nic = None
+
+    gc.collect()
     
     print("\n=== Initializing W5x00 Ethernet ===")
     print(f"Board: {board}")
@@ -43,11 +54,12 @@ def w5x00_init(board="W55RP20-EVB-Pico", use_dhcp=True, static_ip=None, subnet=N
         
         # Wait for connection
         print("Waiting for Ethernet connection", end='')
-        timeout = 15
+        timeout = 120
         start = time.time()
         while not nic.isconnected():
             if time.time() - start > timeout:
                 print("\n✗ Ethernet connection timeout")
+                nic = None
                 return None
             time.sleep(0.5)
             print(".", end='')
@@ -68,14 +80,20 @@ def get_network_status():
         return {'connected': False, 'ip': None}
     
     try:
-        return {
-            'connected': nic.isconnected(),
-            'ip': nic.ifconfig()[0] if nic.isconnected() else None,
-            'subnet': nic.ifconfig()[1] if nic.isconnected() else None,
-            'gateway': nic.ifconfig()[2] if nic.isconnected() else None,
-            'dns': nic.ifconfig()[3] if nic.isconnected() else None
-        }
-    except:
+        is_connected = nic.isconnected()
+        if is_connected:
+            ifconfig = nic.ifconfig()
+            return {
+                'connected': True,
+                'ip': ifconfig[0],
+                'subnet': ifconfig[1],
+                'gateway': ifconfig[2],
+                'dns': ifconfig[3]
+            }
+        else:
+            return {'connected': False, 'ip': None, 'subnet': None, 'gateway': None, 'dns': None}
+    except Exception as e:
+        print(f"Warning: Error getting network status: {e}")
         return {'connected': False, 'ip': None}
 
 def print_network_status():
@@ -106,3 +124,4 @@ if __name__ == '__main__':
     
     if nic:
         print_network_status()
+

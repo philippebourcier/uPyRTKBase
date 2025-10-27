@@ -12,7 +12,7 @@ config = {
     'signal_group': 2,
     'sbas_enabled': True,
     'rtcm_interval': 1,
-    'ntrip_server': None,
+    'ntrip_server': "crtk.net",
     'ntrip_port': 2101,
     'ntrip_mountpoint': None,
     'ntrip_user': None,
@@ -80,7 +80,11 @@ def download_config(server_url, timeout=10):
         print(f"SSL: {use_ssl}")
         
         # Lookup server address
-        ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+        try:
+            ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+        except Exception as e:
+            print(f"ERROR: DNS lookup failed: {e}")
+            return False
         ai = ai[0]
         
         # Create socket
@@ -108,14 +112,17 @@ def download_config(server_url, timeout=10):
         response = b''
         while True:
             try:
-                chunk = s.read(1024)
+                chunk = s.read(512)
                 if not chunk:
                     break
                 response += chunk
             except:
                 break
         
-        s.close()
+        try:
+            s.close()
+        except:
+            pass
         
         # Parse HTTP response
         response_str = response.decode('utf-8', 'ignore')
@@ -156,6 +163,11 @@ def download_config(server_url, timeout=10):
         
     except Exception as e:
         print(f"ERROR downloading config: {e}")
+        if 's' in locals():
+            try:
+                s.close()
+            except:
+                pass
         return False
 
 def print_config():
@@ -176,3 +188,4 @@ if __name__ == '__main__':
     # HTTPS example
     if download_config('https://example.com'):
         print_config()
+

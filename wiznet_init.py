@@ -95,3 +95,4 @@ def wiznet(board, *, dhcp=True, spi=None, cs=None, reset=None, **kw):
     print("MAC Address:", ":".join("%02x" % b for b in nic.config("mac")))
     print("IP Address:", nic.ifconfig())
     return nic
+

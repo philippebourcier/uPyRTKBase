@@ -2,7 +2,10 @@ import usocket as socket
 import time
 import _thread
 import ubinascii as binascii
-    
+import gc
+from machine import WDT
+wdt = WDT(timeout=8000)
+
 class NTRIPCaster:
     """NTRIP Caster client for sending RTCM data from base station"""
     
@@ -95,22 +98,36 @@ class NTRIPCaster:
             if 'ICY 200 OK' in response_str or 'HTTP/1.1 200 OK' in response_str:
                 print("\n✓ Connected to NTRIP caster successfully")
                 self.connected = True
+                # Set socket to non-blocking for production use
+                try:
+                    self.socket.setblocking(False)
+                except:
+                    pass
                 return True
             elif 'HTTP/1.1 409' in response_str or 'HTTP/1.0 409' in response_str:
                 print(f"\n⚠ HTTP 409 Conflict - Mountpoint already in use")
-                self.socket.close()
+                try:
+                    self.socket.close()
+                except:
+                    pass
                 self.socket = None
                 return 'retry'
             else:
                 print(f"\n✗ Connection failed: {response_str[:100]}")
-                self.socket.close()
+                try:
+                    self.socket.close()
+                except:
+                    pass
                 self.socket = None
                 return False
                 
         except Exception as e:
             print(f"\n✗ Connection error: {e}")
             if self.socket:
-                self.socket.close()
+                try:
+                    self.socket.close()
+                except:
+                    pass
                 self.socket = None
             return False
     
@@ -128,7 +145,21 @@ class NTRIPCaster:
             return False
         
         try:
-            self.socket.send(data)
+            # self.socket.send(data)
+            total_sent = 0
+            while total_sent < len(data):
+                try:
+                    sent = self.socket.send(data[total_sent:])
+                    if sent == 0:
+                        raise OSError("Socket connection broken")
+                    total_sent += sent
+                except OSError as e:
+                    # EAGAIN/EWOULDBLOCK - socket buffer full, wait a bit
+                    if e.args[0] == 11:  # EAGAIN
+                        time.sleep(0.01)
+                        continue
+                    else:
+                        raise  
             return True
         except Exception as e:
             print(f"Error sending RTCM: {e}")
@@ -157,52 +188,77 @@ class NTRIPCaster:
         """
         print("\n=== Starting NTRIP Thread ===")
         
+        max_connect_attempts = 120
+        connect_attempt = 0
+        
         # Try to connect, retry indefinitely on 409
         while True:
+            connect_attempt += 1
+            wdt.feed()
+            if connect_attempt > max_connect_attempts:
+                print(f"ERROR: Failed to connect after {max_connect_attempts} attempts")
+                return
             result = self.connect()
             if result == True:
+                connect_attempt = 0  # Reset on success
                 break
             elif result == 'retry':
-                print("Waiting 60 seconds before retry...")
-                time.sleep(60)
+                print("Waiting 7 seconds before retry...")
+                time.sleep(7)
             else:
-                print("Failed to connect to caster")
-                return
+                print(f"Retrying in 7 seconds... (attempt {connect_attempt}/{max_connect_attempts})")
+                time.sleep(7)
         
         self.running = True
         bytes_sent = 0
+        BYTES_COUNTER_MAX = 1000000  # Reset counter at 1MB to prevent overflow
+        last_gc_time = time.ticks_ms()
+        GC_INTERVAL_MS = 300000  # Run GC every 5 minutes
         
         try:
             while self.running:
+                # Periodic garbage collection
+                if time.ticks_diff(time.ticks_ms(), last_gc_time) > GC_INTERVAL_MS:
+                    gc.collect()
+                    last_gc_time = time.ticks_ms()
                 # Read RTCM data from UART
                 if data_uart.any():
-                    data = data_uart.read(data_uart.any())
+                    data = data_uart.read(min(data_uart.any(),2048))
                     if data:
                         if self.send_rtcm(data):
-                            bytes_sent += len(data)
-                            if bytes_sent % 100000 < len(data):  # Print roughly every 1000 bytes
+                            bytes_sent = (bytes_sent + len(data)) % BYTES_COUNTER_MAX
+                            if bytes_sent < 1000:
                                 print(f"Sent {bytes_sent} bytes to caster")
                                 bytes_sent = 0
                         else:
                             print("Connection lost, reconnecting...")
+                            reconnect_attempt = 0
+                            max_reconnect_attempts = 3600
                             # Retry indefinitely on reconnection
                             while True:
+                                reconnect_attempt += 1
+                                if reconnect_attempt > max_reconnect_attempts:
+                                    print(f"ERROR: Failed to reconnect after {max_reconnect_attempts} attempts")
+                                    self.running = False
+                                    return                                
                                 result = self.connect()
                                 if result == True:
+                                    reconnect_attempt = 0
                                     break
                                 elif result == 'retry':
-                                    print("Waiting 60 seconds before retry...")
-                                    time.sleep(60)
+                                    print(f"Reconnection failed, retrying in 7s... (attempt {reconnect_attempt}/{max_reconnect_attempts})")
+                                    time.sleep(7)
                                 else:
-                                    print("Reconnection failed, retrying in 60s...")
-                                    time.sleep(60)
-                
+                                    print("Reconnection failed, retrying in 7s...")
+                                    time.sleep(7)
                 time.sleep(0.01)
                 
         except KeyboardInterrupt:
             print("\nStopped by user")
         except Exception as e:
             print(f"\nError in NTRIP thread: {e}")
+            import sys
+            sys.print_exception(e)
         finally:
             self.disconnect()
 
@@ -252,3 +308,4 @@ if __name__ == '__main__':
         print("Main thread running")
         while True:
             time.sleep(1)
+
