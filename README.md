@@ -71,7 +71,7 @@ Create this file on the device flash:
 
 ```env
 TELEMETRY_URL=http(s)://your_webserver/telemetry
-CONFIG_URL=http://your_webserver/config.json
+CONFIG_URL=http(s)://your_webserver/config.json
 ```
 
 ### Remote config (`config.json`)
