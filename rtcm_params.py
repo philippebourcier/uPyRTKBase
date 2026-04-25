@@ -43,4 +43,3 @@ RTCM_MESSAGES = [
     ('RTCM1243', 1),   # Galileo SSR Combined Orbit + Clock
 """
 
-

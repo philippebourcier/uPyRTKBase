@@ -3,8 +3,7 @@ import time
 import _thread
 import ubinascii as binascii
 import gc
-from machine import WDT
-wdt = WDT(timeout=8000)
+from wdt import feed_wdt
 
 class NTRIPCaster:
     """NTRIP Caster client for sending RTCM data from base station"""
@@ -194,7 +193,7 @@ class NTRIPCaster:
         # Try to connect, retry indefinitely on 409
         while True:
             connect_attempt += 1
-            wdt.feed()
+            feed_wdt()
             if connect_attempt > max_connect_attempts:
                 print(f"ERROR: Failed to connect after {max_connect_attempts} attempts")
                 return
@@ -308,4 +307,3 @@ if __name__ == '__main__':
         print("Main thread running")
         while True:
             time.sleep(1)
-

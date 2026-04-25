@@ -3,33 +3,65 @@ import time
 import rtcm_decoder
 from rtcm_params import RTCM_MESSAGES
 import gc
-from machine import WDT
-wdt = WDT(timeout=8000)
+from wdt import feed_wdt
 
 class UM980Config:
         
-    def __init__(self, uart_id=0, tx_pin=0, rx_pin=1, baudrate=115200, en_pin=6, data_uart_id=None, data_tx_pin=None, data_rx_pin=None):
+    def __init__(self, uart_id=0, tx_pin=0, rx_pin=1, baudrate=115200, data_uart_id=1, data_tx_pin=8, data_rx_pin=9):
         """Initialize UM980 configuration"""
         self.baudrate = baudrate
-        
-        # Enable pin
-        self.en_pin = Pin(en_pin, Pin.OUT)
-        self.en_pin.value(1)
-        print(f"Enabled pin {en_pin}")
         time.sleep(0.5)
-        
         # Initialize control UART (COM1)
         self.uart = UART(uart_id, baudrate=baudrate, tx=Pin(tx_pin), rx=Pin(rx_pin), bits=8, parity=None, stop=1, timeout=2000)
         print(f"UART{uart_id} initialized at {baudrate} baud (Control - COM1)")
-        
         # RTCM Decoder
         self.decoder = rtcm_decoder.RTCMDecoder()
-        
-        # Initialize data UART (COM2) if specified
-        self.data_uart = None
-        if data_uart_id is not None and data_tx_pin is not None and data_rx_pin is not None:
-            self.data_uart = UART(data_uart_id, baudrate=baudrate, tx=Pin(data_tx_pin), rx=Pin(data_rx_pin), bits=8, parity=None, stop=1, timeout=2000, rxbuf=4096)
-            print(f"UART{data_uart_id} initialized at {baudrate} baud (Data - COM2)")
+        # Initialize data UART (COM2)
+        self.data_uart = UART(data_uart_id, baudrate=baudrate, tx=Pin(data_tx_pin), rx=Pin(data_rx_pin), bits=8, parity=None, stop=1, timeout=2000, rxbuf=4096)
+        print(f"UART{data_uart_id} initialized at {baudrate} baud (Data - COM2)")
+
+    def start_sensor(self, max_retries=5):
+        """
+        Detect the UM980 and apply configuration if needed.
+        Handles slow startup with retries and WDT feeding.
+
+        Returns:
+            (model, firmware) on success, (None, None) on failure
+        """
+        print("\n=== Starting UM980 Sensor ===")
+
+        model, firmware = None, None
+        for retry in range(max_retries):
+            feed_wdt()
+            model, firmware = self.get_receiver_model()
+            if model:
+                break
+            print(f"⚠ Retry {retry + 1}/{max_retries}: Failed to detect UM980")
+            time.sleep(1)
+
+        if not model:
+            print("✗ Failed to detect UM980 after retries")
+            return None, None
+
+        print(f"✓ UM980 detected: {model}, FW: {firmware}")
+
+        print("\n=== Checking UM980 Configuration ===")
+        feed_wdt()
+        result = self.check_config_matches()
+        feed_wdt()
+
+        if result is None or not isinstance(result, tuple):
+            print("⚠ Could not check configuration, assuming configured")
+        else:
+            needs_update, current_config = result
+            if needs_update:
+                print("\n⚠ UM980 needs configuration update, configuring automatically...")
+                self.full_configuration()
+                print("✓ UM980 configured")
+            else:
+                print("✓ UM980 already configured correctly")
+
+        return model, firmware
         
     def _xor8_checksum(self, data):
         """Calculate XOR checksum"""
@@ -43,10 +75,9 @@ class UM980Config:
         return f'${cmd}*{self._xor8_checksum(cmd)}'
 
     def _clear_buffer(self):
-        # Clear buffer safely with size limit
+        """Clear buffer safely with size limit"""
         bytes_to_clear = self.uart.any()
         if bytes_to_clear > 0:
-            # Clear in chunks to prevent memory issues
             while bytes_to_clear > 0:
                 chunk_size = min(bytes_to_clear, 1024)
                 self.uart.read(chunk_size)
@@ -68,6 +99,7 @@ class UM980Config:
         max_response_size = 4096
         
         while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000 and len(response) < max_response_size:
+            feed_wdt()
             if self.uart.any():
                 chunk = self.uart.read(self.uart.any())
                 if chunk:
@@ -104,6 +136,7 @@ class UM980Config:
         last_data_time = None
         
         while time.ticks_diff(time.ticks_ms(), start) < timeout * 1000:
+            feed_wdt()
             if self.uart.any():
                 chunk = self.uart.read(self.uart.any())
                 if chunk:
@@ -270,14 +303,21 @@ class UM980Config:
         
         return needs_update, config
     
-    def configure_base_station(self, mode='time', duration=60, pdop=1):
+    def configure_base_station(self, mode='time', duration=60, pdop=1, current_signal_group=None):
         """Configure as RTK base station"""
         print("\n=== Configuring Base Station ===")
         
-        print("Setting signal group 2...")
-        self.send_command('CONFIG SIGNALGROUP 2')
-        print("Waiting for reboot (10s)...")
-        time.sleep(10)
+        # Only send SIGNALGROUP if it actually needs changing — it triggers a reboot
+        if current_signal_group != 2:
+            print("Setting signal group 2...")
+            self.send_command('CONFIG SIGNALGROUP 2')
+            print("Waiting for reboot (10s)...")
+            # Feed WDT every 500ms across the full 10s wait
+            for _ in range(20):
+                feed_wdt()
+                time.sleep(0.5)
+        else:
+            print("Signal group already 2, skipping reboot")
         
         print("Enabling SBAS...")
         self.send_command('CONFIG SBAS ENABLE AUTO')
@@ -287,7 +327,54 @@ class UM980Config:
         print(f"Setting base mode: {cmd}")
         self.send_command(cmd)
         time.sleep(0.5)
-    
+
+    def set_base_coordinates(self, latitude, longitude, altitude, station_id=None):
+        """
+        Set fixed base station coordinates (MODE BASE with known position).
+        Use this instead of configure_base_station() when the antenna position
+        is already known precisely — skips the self-survey TIME phase entirely.
+        Args:
+            latitude:   Latitude in decimal degrees  (e.g. 42.50881200)
+            longitude:  Longitude in decimal degrees (e.g.  1.53037157)
+            altitude:   Altitude in metres           (e.g. 1097.0)
+            station_id: Optional base station identifier, integer 0-4095.
+                        Included in RTCM1005/1006 messages for rover identification.
+                        Omit if not needed.
+
+        Returns:
+            True if the command was acknowledged, False otherwise
+        """
+        print("\n=== Setting Fixed Base Coordinates ===")
+        print(f"  Lat : {latitude}")
+        print(f"  Lon : {longitude}")
+        print(f"  Alt : {altitude} m")
+
+        if not (-90 <= latitude <= 90):
+            print(f"✗ Latitude must be -90..90 (got {latitude})")
+            return False
+        if not (-180 <= longitude <= 180):
+            print(f"✗ Longitude must be -180..180 (got {longitude})")
+            return False
+        if not (-30000 <= altitude <= 30000):
+            print(f"✗ Altitude must be -30000..30000 m (got {altitude})")
+            return False
+        if station_id is not None:
+            if not (0 <= int(station_id) <= 4095):
+                print(f"✗ station_id must be between 0 and 4095 (got {station_id})")
+                return False
+            cmd = f'MODE BASE {latitude} {longitude} {altitude} {int(station_id)}'
+            print(f"  Station ID: {station_id}")
+        else:
+            cmd = f'MODE BASE {latitude} {longitude} {altitude}'
+
+        resp = self.send_command(cmd)
+        if resp and 'OK' in resp:
+            print("✓ Fixed base coordinates applied")
+            return True
+        else:
+            print(f"✗ Command may have failed. Response: {resp}")
+            return False
+
     def configure_rtcm_messages(self, com_port='COM2'):
         """Configure RTCM3 message output"""
         print(f"\n=== Configuring RTCM on {com_port} ===")
@@ -303,7 +390,11 @@ class UM980Config:
     def save_config(self):
         """Save configuration to NVM"""
         print("\n=== Saving Configuration ===")
-        self.send_command('SAVECONFIG')
+        resp = self.send_command('SAVECONFIG', timeout=3)
+        if resp and 'OK' in resp:
+            print("✓ Configuration saved to NVM")
+        else:
+            print(f"✗ SAVECONFIG may have failed. Response: {resp}")
         time.sleep(1)
     
     def read_rtcm_data(self, duration=10, callback=None):
@@ -321,11 +412,11 @@ class UM980Config:
         
         try:
             while True:
-                # Check if data available
+                feed_wdt()
                 bytes_available = self.data_uart.any()
                 
                 if bytes_available > 0:
-                    data = self.data_uart.read(min(bytes_available,2048))
+                    data = self.data_uart.read(min(bytes_available, 2048))
                     if data:
                         if callback:
                             callback(data)
@@ -338,7 +429,6 @@ class UM980Config:
                     if elapsed >= duration:
                         break
                 
-                # Small sleep to prevent busy-waiting
                 time.sleep_ms(20)
         
         except KeyboardInterrupt:
@@ -354,7 +444,7 @@ class UM980Config:
         Get the automatic gain control values (UM980 single antenna)
         
         Args:
-            max_retries: Number of attempts to get valid response (default 3)
+            max_retries: Number of attempts to get valid response (default 9)
         
         Returns:
             dict: AGC values {'L1': val, 'L2': val, 'L5': val}
@@ -363,8 +453,7 @@ class UM980Config:
         print("\n=== Getting AGC Values ===")
         
         for attempt in range(max_retries):
-            wdt.feed()
-            # Use send_query which returns both OK and #AGCA response
+            feed_wdt()
             resp_str = self.send_query('AGCA', timeout=3)
             
             if not resp_str:
@@ -385,11 +474,9 @@ class UM980Config:
                 for line in resp_str.split('\n'):
                     if '#AGCA' in line:
                         try:
-                            # Split by semicolon to get the values section
                             values_part = line.split(';')[-1].split('*')[0]
                             values_list = [int(x.strip()) for x in values_part.split(',')]
                             
-                            # Extract first 3 values (L1, L2, L5)
                             agc_values = {
                                 'L1': values_list[0],
                                 'L2': values_list[1],
@@ -397,7 +484,6 @@ class UM980Config:
                             }
                             
                             print(f"L1: {agc_values['L1']}, L2: {agc_values['L2']}, L5: {agc_values['L5']}")
-                            
                             return agc_values
                         except Exception as e:
                             print(f"Attempt {attempt + 1}/{max_retries}: ERROR parsing AGCA response: {e}")
@@ -454,13 +540,14 @@ class UM980Config:
         if model and 'UM98' in model:
             print(f"\nDetected: {model}")
             
-            if not force_update:
-                needs_update, _ = self.check_config_matches()
-                if not needs_update:
-                    print("\n✓ Already configured correctly")
-                    return
+            needs_update, config = self.check_config_matches()
             
-            self.configure_base_station(mode='time', duration=60, pdop=1)
+            if not force_update and not needs_update:
+                print("\n✓ Already configured correctly")
+                return
+            
+            current_sg = config['signal_group'] if config else None
+            self.configure_base_station(mode='time', duration=60, pdop=1, current_signal_group=current_sg)
             self.configure_rtcm_messages(com_port='COM2')
             self.save_config()
             
@@ -470,24 +557,14 @@ class UM980Config:
         else:
             print("ERROR: Could not detect UM980")
 
+
 # Usage
 if __name__ == '__main__':
-    um980 = UM980Config(
-        uart_id=0, tx_pin=0, rx_pin=1,
-        data_uart_id=1, data_tx_pin=8, data_rx_pin=9,
-        baudrate=115200, en_pin=6
-    )
-    
-    #um980.send_query("FRESET")
-    # Check current config
-    #um980.get_current_config()
-    
-    # Configure (only if needed)
-    #um980.full_configuration()
-
-    um980.decoder.debug_crc = True
-    um980.read_rtcm_data(duration=10,callback=um980.decoder.process)
-    
-    
-
-
+    um980 = UM980Config()
+    model, firmware = um980.start_sensor()
+    if not model:
+        print("Halting — UM980 not detected")
+    else:
+        um980.decoder.debug_crc = True
+        um980.read_rtcm_data(duration=10, callback=um980.decoder.process)
+        pass
