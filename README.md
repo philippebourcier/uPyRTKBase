@@ -1,6 +1,6 @@
-# Centipede RTK Base Station
+# uPyRTKBase MCU-based RTK Base Station Firmware
 
-MicroPython firmware for the **W55RP20-EVB-Pico** board driving a **UM980** RTK GNSS receiver.  
+MicroPython firmware for the **W5500-EVB-Pico2** board driving a **UM980** RTK GNSS receiver.  
 Streams RTCM3 corrections to a Centipede NTRIP caster, monitors antenna health, and reports telemetry.
 
 ---
@@ -9,7 +9,7 @@ Streams RTCM3 corrections to a Centipede NTRIP caster, monitors antenna health, 
 
 | Component | Part |
 |-----------|------|
-| MCU + Ethernet | WIZnet W55RP20-EVB-Pico (RP2350 + W5500) |
+| MCU + Ethernet | WIZnet W5500-EVB-Pico2 (RP2350 + W5500) |
 | GNSS receiver | Unicore UM980 (tri-band RTK) |
 | GNSS antenna | Tri-band RTK antenna |
 | IMU | ST LSM6DSV16X (vibration + tilt) |
@@ -169,7 +169,7 @@ Full schema:
 | 🔵 Cyan | UM980 up, checks pending |
 | 🟢 Green | AGC good, level, no vibration |
 | 🟠 Orange | AGC degraded on one or more bands |
-| 🩷 Pink | Vibrating or tilted (IMU alarm) |
+| 🟣 Pink | Vibrating or tilted (IMU alarm) |
 | 🔴 Red | UM980 init failed / AGC check error |
 
 ---
