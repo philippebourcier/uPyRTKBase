@@ -45,7 +45,8 @@ Both LEDs are **common-anode to 3V3** (active LOW: 0 = ON, 1 = OFF).
 ## File Structure
 
 ```
-├── base.py               # Main to be
+├── main.py               # Main
+├── base.py               # All the logic and loop
 ├── config_manager.py     # Local config, remote config download, .env loader
 ├── um980_config.py       # UM980 driver and base station configuration
 ├── network_init.py       # W5500 Ethernet initialization
