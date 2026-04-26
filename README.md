@@ -196,11 +196,13 @@ The call is fire-and-forget — no retry, errors silently ignored.
 | Field | Source | Description |
 |-------|--------|-------------|
 | `hw` | RP2350 `unique_id()` | Device hardware ID |
-| `rms_max` | LSM6DSV16X | Max RMS angular rate across X/Y/Z axes (dps) |
+| `rms_max` | LSM6DSV16X | Max RMS (*) angular rate across X/Y/Z axes (dps) |
 | `pitch` / `roll` | LSM6DSV16X | Antenna tilt in degrees (`null` when vibrating) |
 | `temperature` | SHT40 | Ambient temperature in °C |
 | `humidity` | SHT40 | Relative humidity in % (0–100) |
 | `agc_l1` / `agc_l2` / `agc_l5` | UM980 | AGC values per band (lower = better; −1 = unknown) |
+
+(*) Maximum RMS (Root Mean Square) angular rate across the three gyroscope axes (X, Y, Z), measured in degrees per second (dps). It represents how much the sensor is rotating — a proxy for vibration or movement of the antenna pole. If >0.5, the antenna is vibrating too much (wind ?).
 
 ---
 
