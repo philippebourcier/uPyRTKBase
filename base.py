@@ -224,7 +224,7 @@ def _build_status_page(status):
       {led2_html}
     </div>
     <table>{''.join(rows)}</table>
-    <p class="footer">Auto-refresh every 10s | Hold BTN_USER &gt;3s to reboot</p>
+    <p class="footer">Hold BTN_USER &gt;3s to reboot</p>
   </div>
 </body>
 </html>"""
