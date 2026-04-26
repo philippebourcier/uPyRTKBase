@@ -138,13 +138,29 @@ Full schema:
 
 ---
 
+## Status Web Server
+
+A non-blocking HTTP server runs on port 80 in the main loop, serving a live status page.
+
+- Auto-refreshes every 45 seconds
+- Displays LED status indicators with color and meaning
+- Shows all sensor readings, NTRIP connection state, and antenna health
+
 ## Main Loop
 
 | Interval | Action |
 |----------|--------|
 | Every iteration (~1–2 s) | IMU check: vibration + tilt → update LED2 |
-| Every 30 s | AGC check on L1/L2/L5 → update LED2 |
-| Every 5 min | Read SHT40, send telemetry, check NTRIP → update LED1 |
+| Every 60 s | Sample SHT40 + AGC → rolling buffer (5 samples), update LED2 |
+| Every 5 min | Average buffers, send telemetry, check NTRIP → update LED1 |
+
+## Button
+
+| Action | Effect |
+|--------|--------|
+| Hold BTN_USER (GPIO26) >3s | Reboot — re-downloads config on next boot |
+
+Both LEDs flash WHITE while the button is held as confirmation feedback.
 
 ---
 
@@ -196,13 +212,15 @@ The call is fire-and-forget — no retry, errors silently ignored.
 | Field | Source | Description |
 |-------|--------|-------------|
 | `hw` | RP2350 `unique_id()` | Device hardware ID |
-| `rms_max` | LSM6DSV16X | Max RMS (*) angular rate across X/Y/Z axes (dps) |
-| `pitch` / `roll` | LSM6DSV16X | Antenna tilt in degrees (`null` when vibrating) |
+| `rms_max_delta` | LSM6DSV16X | Max RMS angular rate delta (max−min) over 5min window (dps) |
+| `pitch_delta` / `roll_delta` | LSM6DSV16X | Antenna tilt delta over 5min window, degrees (`null` when vibrating) |
 | `temperature` | SHT40 | Ambient temperature in °C |
 | `humidity` | SHT40 | Relative humidity in % (0–100) |
 | `agc_l1` / `agc_l2` / `agc_l5` | UM980 | AGC values per band (lower = better; −1 = unknown) |
 
-(*) Maximum RMS (Root Mean Square) angular rate across the three gyroscope axes (X, Y, Z), measured in degrees per second (dps). It represents how much the sensor is rotating — a proxy for vibration or movement of the antenna pole. If >0.5, the antenna is vibrating too much (wind ?).
+(* ) rms_max_delta is the difference between the maximum and minimum RMS angular rate
+observed over the 5-minute window. A large delta indicates intermittent vibration events
+(e.g. wind gusts). env and AGC values are averaged over 5 one-minute samples before sending.
 
 ---
 
