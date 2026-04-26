@@ -270,7 +270,8 @@ def _serve(server_sock, status):
             data = _build_status_page(status)
             total = 0
             while total < len(data):
-                sent = conn.send(data[total:])
+                chunk = data[total:total+1024]
+                sent = conn.send(chunk)
                 if sent == 0:
                     print(f"[HTTP] Send stalled at {total}/{len(data)}")
                     break
