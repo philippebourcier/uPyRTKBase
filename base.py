@@ -243,16 +243,28 @@ def _build_status_page(status):
 
 _404 = b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
 
+def _reset_server_sock(server_sock):
+    """Close and recreate the server socket after it goes bad."""
+    try:
+        server_sock.close()
+    except:
+        pass
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', 80))
+    s.listen(5)
+    s.setblocking(False)
+    print("[HTTP] Server socket recreated")
+    return s
+
 def _serve(server_sock, status):
-    """
-    Accept and serve one pending HTTP request.
-    Following the Wiznet MicroPython example: plain blocking socket,
-    HTTP/1.0, no settimeout/setblocking — just recv/send/close.
-    """
     try:
         conn, addr = server_sock.accept()
+        print(f"[HTTP] Connection from {addr}")
         req = conn.recv(4096)
+        print(f"[HTTP] Request: {req[:80]}")
         if b'favicon.ico' in req:
+            print("[HTTP] 404 favicon")
             conn.send(_404)
         else:
             data = _build_status_page(status)
@@ -260,11 +272,19 @@ def _serve(server_sock, status):
             while total < len(data):
                 sent = conn.send(data[total:])
                 if sent == 0:
+                    print(f"[HTTP] Send stalled at {total}/{len(data)}")
                     break
                 total += sent
+            print(f"[HTTP] Sent {total}/{len(data)} bytes")
         conn.close()
-    except OSError:
-        pass   # no client waiting — normal
+        print("[HTTP] Connection closed")
+    except OSError as e:
+        if e.args[0] == 11:   # EAGAIN — no client waiting, normal
+            pass
+        else:
+            print(f"[HTTP] OSError: {e}")
+            return True   # signal caller to recreate socket
+    return False
 
 
 def main():
@@ -448,7 +468,8 @@ def main():
             # Serve any pending HTTP request (non-blocking)
             # -----------------------------------------------------------------
             status['ntrip'] = ntrip.connected if ntrip else False
-            _serve(server_sock, status)
+            if _serve(server_sock, status):
+                server_sock = _reset_server_sock(server_sock)
 
             # -----------------------------------------------------------------
             # IMU check -> LED2 + status snapshot
