@@ -198,15 +198,15 @@ The call is fire-and-forget — no retry, errors silently ignored.
 
 ```json
 {
-  "hw":          "<hardware_unique_id>",
-  "rms_max":     0.012,
-  "pitch":       0.43,
-  "roll":        -0.21,
-  "temperature": 23.4,
-  "humidity":    61.2,
-  "agc_l1":      4,
-  "agc_l2":      7,
-  "agc_l5":      3
+  "pitch_delta": 0.0098,
+  "temperature": 36.46,
+  "roll_delta": 0.0098,
+  "rms_max_delta": 0.2259,
+  "agc_l1": 0,
+  "agc_l2": 1.2,
+  "agc_l5": 5.6,
+  "humidity": 34.26,
+  "hw": "<hardware_unique_id>"
 }
 ```
 
