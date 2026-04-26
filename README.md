@@ -168,7 +168,7 @@ Full schema:
 | 🟡 Yellow | UM980 initializing |
 | 🔵 Cyan | UM980 up, checks pending |
 | 🟢 Green | AGC good, level, no vibration |
-| 🟠 Orange | AGC degraded on one or more bands |
+| 🔵 Blue   | AGC degraded on one or more bands |
 | 🟣 Pink | Vibrating or tilted (IMU alarm) |
 | 🔴 Red | UM980 init failed / AGC check error |
 

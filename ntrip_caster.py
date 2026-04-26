@@ -5,78 +5,81 @@ import ubinascii as binascii
 import gc
 from wdt import feed_wdt
 
+# Retry delays
+_RETRY_DELAY_S     =  7    # generic connection failure
+_RETRY_DELAY_409_S = 60    # 409 Conflict — wait for caster to release old session
+
+
 class NTRIPCaster:
     """NTRIP Caster client for sending RTCM data from base station"""
-    
+
     def __init__(self, server, port, mountpoint, username, password):
-        """
-        Initialize NTRIP Caster connection
-        
-        Args:
-            server: NTRIP caster hostname/IP
-            port: NTRIP caster port (usually 2101)
-            mountpoint: Mountpoint name on caster
-            username: Authentication username
-            password: Authentication password
-        """
-        self.server = server
-        self.port = port
+        self.server     = server
+        self.port       = port
         self.mountpoint = mountpoint
-        self.username = username
-        self.password = password
-        self.socket = None
-        self.connected = False
-        self.running = False
-        
+        self.username   = username
+        self.password   = password
+        self.socket     = None
+        self.connected  = False
+        self.running    = False
+
     def _base64_encode(self, user, pwd):
-        """Encode username:password in base64 for HTTP Basic Auth"""
         credentials = f"{user}:{pwd}"
-        encoded = binascii.b2a_base64(credentials.encode()).decode().strip()
-        return encoded
-    
+        return binascii.b2a_base64(credentials.encode()).decode().strip()
+
     def _build_source_request(self):
-        """Build NTRIP source table request (HTTP POST for base station)"""
-        request = (
+        auth = self._base64_encode(self.username, self.password)
+        return (
             f"POST /{self.mountpoint} HTTP/1.1\r\n"
             f"Host: {self.server}\r\n"
             f"Ntrip-Version: Ntrip/2.0\r\n"
             f"User-Agent: NTRIP MicroPython Base\r\n"
+            f"Authorization: Basic {auth}\r\n"
+            f"Connection: close\r\n\r\n"
         )
-        
-        # Add authentication
-        auth = self._base64_encode(self.username, self.password)
-        request += f"Authorization: Basic {auth}\r\n"
-        
-        request += "Connection: close\r\n\r\n"
-        return request
-    
+
+    def _close_socket(self):
+        """Cleanly close and release socket — call before every reconnect attempt."""
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+        self.connected = False
+
     def connect(self):
-        """Connect to NTRIP caster"""
+        """
+        Connect to NTRIP caster.
+
+        Returns:
+            True     — connected successfully
+            'retry'  — 409 Conflict, mountpoint busy (wait _RETRY_DELAY_409_S)
+            False    — other failure (wait _RETRY_DELAY_S)
+        """
+        # Always close any existing socket before opening a new one
+        self._close_socket()
+
         print(f"\n=== Connecting to NTRIP Caster ===")
         print(f"Server: {self.server}:{self.port}")
         print(f"Mountpoint: {self.mountpoint}")
-        
+
         try:
-            # Create socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(10)
-            
-            # Resolve hostname and connect
-            addr_info = socket.getaddrinfo(self.server, self.port)[0]
-            addr = addr_info[-1]
+
+            addr = socket.getaddrinfo(self.server, self.port)[0][-1]
             print(f"Resolved to: {addr}")
-            
+
             self.socket.connect(addr)
             print("✓ TCP connection established")
-            
-            # Send NTRIP request
+
             request = self._build_source_request()
             print("\nSending request:")
             print(request[:200] + "...")
-            
             self.socket.send(request.encode())
-            
-            # Wait for response
+
+            # Read response headers
             response = b''
             start = time.time()
             while time.time() - start < 5:
@@ -88,63 +91,41 @@ class NTRIPCaster:
                             break
                 except:
                     break
-            
+
             response_str = response.decode('utf-8', 'ignore')
             print("\nReceived response:")
             print(response_str[:200])
-            
-            # Check for success
+
             if 'ICY 200 OK' in response_str or 'HTTP/1.1 200 OK' in response_str:
-                print("\n✓ Connected to NTRIP caster successfully")
+                print("✓ Connected to NTRIP caster successfully")
                 self.connected = True
-                # Set socket to non-blocking for production use
                 try:
                     self.socket.setblocking(False)
                 except:
                     pass
                 return True
-            elif 'HTTP/1.1 409' in response_str or 'HTTP/1.0 409' in response_str:
-                print(f"\n⚠ HTTP 409 Conflict - Mountpoint already in use")
-                try:
-                    self.socket.close()
-                except:
-                    pass
-                self.socket = None
+
+            elif '409' in response_str:
+                print("⚠ HTTP 409 Conflict — mountpoint busy, caster needs time to release")
+                self._close_socket()
                 return 'retry'
+
             else:
-                print(f"\n✗ Connection failed: {response_str[:100]}")
-                try:
-                    self.socket.close()
-                except:
-                    pass
-                self.socket = None
+                print(f"✗ Connection failed: {response_str[:100]}")
+                self._close_socket()
                 return False
-                
+
         except Exception as e:
-            print(f"\n✗ Connection error: {e}")
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
-                self.socket = None
+            print(f"✗ Connection error: {e}")
+            self._close_socket()
             return False
-    
+
     def send_rtcm(self, data):
-        """
-        Send RTCM data to caster
-        
-        Args:
-            data: bytes object containing RTCM frame(s)
-        
-        Returns:
-            bool: True if sent successfully
-        """
+        """Send RTCM data to caster. Returns False on failure."""
         if not self.connected or not self.socket:
             return False
-        
+
         try:
-            # self.socket.send(data)
             total_sent = 0
             while total_sent < len(data):
                 try:
@@ -153,105 +134,85 @@ class NTRIPCaster:
                         raise OSError("Socket connection broken")
                     total_sent += sent
                 except OSError as e:
-                    # EAGAIN/EWOULDBLOCK - socket buffer full, wait a bit
-                    if e.args[0] == 11:  # EAGAIN
-                        time.sleep(0.01)
+                    if e.args[0] == 11:   # EAGAIN — socket buffer full
+                        time.sleep_ms(10)
                         continue
-                    else:
-                        raise  
+                    raise
             return True
         except Exception as e:
             print(f"Error sending RTCM: {e}")
-            self.connected = False
+            self._close_socket()
             return False
-    
+
     def disconnect(self):
-        """Disconnect from caster"""
+        """Disconnect from caster."""
         self.running = False
-        self.connected = False
-        if self.socket:
-            try:
-                self.socket.close()
-            except:
-                pass
-            self.socket = None
+        self._close_socket()
         print("Disconnected from NTRIP caster")
-    
-    def run_threaded(self, data_uart):
+
+    def _connect_with_retry(self, max_attempts, context=""):
         """
-        Run NTRIP client on separate thread
-        Reads RTCM from data_uart and sends to caster
-        
-        Args:
-            data_uart: UART object to read RTCM data from
+        Keep trying to connect until success or max_attempts exceeded.
+        Waits 60s on 409, 7s on other failures.
+
+        Returns True on success, False if max_attempts exhausted.
         """
-        print("\n=== Starting NTRIP Thread ===")
-        
-        max_connect_attempts = 120
-        connect_attempt = 0
-        
-        # Try to connect, retry indefinitely on 409
-        while True:
-            connect_attempt += 1
+        self.connected = False   # always show disconnected while retrying
+        for attempt in range(1, max_attempts + 1):
             feed_wdt()
-            if connect_attempt > max_connect_attempts:
-                print(f"ERROR: Failed to connect after {max_connect_attempts} attempts")
-                return
             result = self.connect()
-            if result == True:
-                connect_attempt = 0  # Reset on success
-                break
-            elif result == 'retry':
-                print("Waiting 7 seconds before retry...")
-                time.sleep(7)
+
+            if result is True:
+                return True
+
+            if result == 'retry':
+                print(f"{context}Mountpoint busy — waiting {_RETRY_DELAY_409_S}s for caster to release... (attempt {attempt}/{max_attempts})")
+                steps = _RETRY_DELAY_409_S // 7
+                for _ in range(steps):
+                    feed_wdt()
+                    time.sleep_ms(7000)
             else:
-                print(f"Retrying in 7 seconds... (attempt {connect_attempt}/{max_connect_attempts})")
-                time.sleep(7)
-        
+                print(f"{context}Retrying in {_RETRY_DELAY_S}s... (attempt {attempt}/{max_attempts})")
+                time.sleep_ms(_RETRY_DELAY_S * 1000)
+
+        print(f"ERROR: Failed to connect after {max_attempts} attempts")
+        return False
+
+    def run_threaded(self, data_uart):
+        """Read RTCM from data_uart and stream to caster. Runs on core 1."""
+        print("\n=== Starting NTRIP Thread ===")
+
+        if not self._connect_with_retry(max_attempts=120, context="[initial] "):
+            return
+
         self.running = True
-        bytes_sent = 0
-        BYTES_COUNTER_MAX = 1000000  # Reset counter at 1MB to prevent overflow
-        last_gc_time = time.ticks_ms()
-        GC_INTERVAL_MS = 300000  # Run GC every 5 minutes
-        
+        last_5min    = time.ticks_ms()
+        bytes_window = 0
+
         try:
             while self.running:
-                # Periodic garbage collection
-                if time.ticks_diff(time.ticks_ms(), last_gc_time) > GC_INTERVAL_MS:
+                feed_wdt()
+
+                # Every 5 minutes: GC + throughput summary
+                if time.ticks_diff(time.ticks_ms(), last_5min) >= 300000:
                     gc.collect()
-                    last_gc_time = time.ticks_ms()
-                # Read RTCM data from UART
+                    print(f"NTRIP: {bytes_window} bytes sent in last 5min")
+                    bytes_window = 0
+                    last_5min = time.ticks_ms()
+
                 if data_uart.any():
-                    data = data_uart.read(min(data_uart.any(),2048))
+                    data = data_uart.read(min(data_uart.any(), 2048))
                     if data:
-                        if self.send_rtcm(data):
-                            bytes_sent = (bytes_sent + len(data)) % BYTES_COUNTER_MAX
-                            if bytes_sent < 1000:
-                                print(f"Sent {bytes_sent} bytes to caster")
-                                bytes_sent = 0
-                        else:
+                        if not self.send_rtcm(data):
                             print("Connection lost, reconnecting...")
-                            reconnect_attempt = 0
-                            max_reconnect_attempts = 3600
-                            # Retry indefinitely on reconnection
-                            while True:
-                                reconnect_attempt += 1
-                                if reconnect_attempt > max_reconnect_attempts:
-                                    print(f"ERROR: Failed to reconnect after {max_reconnect_attempts} attempts")
-                                    self.running = False
-                                    return                                
-                                result = self.connect()
-                                if result == True:
-                                    reconnect_attempt = 0
-                                    break
-                                elif result == 'retry':
-                                    print(f"Reconnection failed, retrying in 7s... (attempt {reconnect_attempt}/{max_reconnect_attempts})")
-                                    time.sleep(7)
-                                else:
-                                    print("Reconnection failed, retrying in 7s...")
-                                    time.sleep(7)
-                time.sleep(0.01)
-                
+                            if not self._connect_with_retry(max_attempts=3600, context="[reconnect] "):
+                                self.running = False
+                                return
+                        else:
+                            bytes_window += len(data)
+
+                time.sleep_ms(10)
+
         except KeyboardInterrupt:
             print("\nStopped by user")
         except Exception as e:
@@ -263,35 +224,24 @@ class NTRIPCaster:
 
 
 def start_ntrip_thread(ntrip_caster, data_uart):
-    """
-    Helper to start NTRIP caster on second core
-    
-    Args:
-        ntrip_caster: NTRIPCaster instance
-        data_uart: UART object for reading RTCM data
-    """
     _thread.start_new_thread(ntrip_caster.run_threaded, (data_uart,))
     print("NTRIP thread started on core 1")
 
 
-# Usage example
 if __name__ == '__main__':
     from machine import UART, Pin
     from network_init import w5x00_init
-    
-    # Step 1: Initialize Ethernet
+
     print("Initializing Ethernet...")
     nic = w5x00_init(board="W55RP20-EVB-Pico", use_dhcp=True)
-    
+
     if not nic:
         print("Failed to initialize network")
     else:
         print(f"Connected: {nic.ifconfig()}")
-        
-        # Step 2: Initialize data UART (COM2)
+
         data_uart = UART(1, baudrate=115200, tx=Pin(8), rx=Pin(9))
-        
-        # Step 3: Create NTRIP caster client (no position needed for base)
+
         ntrip = NTRIPCaster(
             server='ntrip.example.com',
             port=2101,
@@ -299,11 +249,9 @@ if __name__ == '__main__':
             username='user',
             password='pass'
         )
-        
-        # Step 4: Start on second core
+
         start_ntrip_thread(ntrip, data_uart)
-        
-        # Main thread continues...
+
         print("Main thread running")
         while True:
-            time.sleep(1)
+            time.sleep_ms(1000)
