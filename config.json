@@ -1,1 +1,0 @@
-{"base_lat": 0, "ntrip_port": 2101, "ntrip_password": "centipede", "rtcm_interval": 1, "sbas_enabled": true, "dns": null, "ntrip_mountpoint": "CTCHEAP", "dhcp": true, "base_alt": 0, "gateway": null, "base_lon": 0, "ip": null, "subnet": null, "base_duration": 60, "ntrip_server": "crtk.net", "base_pdop": 1, "base_mode": "time", "ntrip_user": "centipede", "signal_group": 2}
