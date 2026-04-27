@@ -72,11 +72,13 @@ _LED2_META = {
 
 
 def _set_led1(color_name, status):
+    # INTERNET LED
     leds.led1.set(*getattr(Color, color_name))
     status['led1'] = color_name
 
 
 def _set_led2(color_name, status):
+    # GNSS/RTK LED
     leds.led2.set(*getattr(Color, color_name))
     status['led2'] = color_name
 
@@ -127,7 +129,6 @@ def _send_telemetry(payload):
             port = int(p)
         path = '/' + '/'.join(host.split('/')[1:]) if '/' in host else '/'
         host = host.split('/')[0]
-
         body = json.dumps(payload)
         request = (
             f"POST {path} HTTP/1.0\r\n"
@@ -167,6 +168,7 @@ def _led_indicator(label, color_name, meta):
 
 
 def _build_status_page(status):
+
     def _row(label, value):
         return f"<tr><td>{label}</td><td><b>{value}</b></td></tr>"
 
@@ -229,8 +231,6 @@ def _build_status_page(status):
 </body>
 </html>"""
 
-    # Encode to bytes first — Content-Length must be byte count, not char count
-    # Multi-byte chars (degree sign, delta, etc.) would cause truncation otherwise
     body_bytes = body.encode('utf-8')
     header = (
         "HTTP/1.0 200 OK\r\n"
@@ -239,7 +239,6 @@ def _build_status_page(status):
         "\r\n"
     ).encode('utf-8')
     return header + body_bytes
-
 
 _404 = b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
 
@@ -280,15 +279,15 @@ def _serve(server_sock, status):
         conn.close()
         print("[HTTP] Connection closed")
     except OSError as e:
-        if e.args[0] == 11:   # EAGAIN — no client waiting, normal
+        if e.args[0] == 11:
             pass
         else:
             print(f"[HTTP] OSError: {e}")
-            return True   # signal caller to recreate socket
+            return True
     return False
 
-
 def main():
+
     print("=" * 60)
     print("RTK BASE STATION")
     print("=" * 60)
